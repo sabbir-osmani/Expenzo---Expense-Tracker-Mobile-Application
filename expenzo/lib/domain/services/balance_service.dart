@@ -2,41 +2,43 @@ import '../../core/enums/transaction_type.dart';
 import '../../data/models/transaction_model.dart';
 import '../entities/wallet_summary.dart';
 
+/// Single source of truth for ALL money calculations in Expenzo.
+/// Every screen, provider, and widget must use this service.
+/// No screen calculates balances independently.
 class BalanceService {
   const BalanceService();
 
   // ── Core ──────────────────────────────────────────────────────────────────
 
+  /// Wallet balance from ALL transactions.
   double computeWalletBalance(
     String walletId,
     List<TransactionModel> transactions,
   ) {
-    double balance = 0.0;
+    // Use integer-safe accumulation to avoid floating-point drift.
+    int paise = 0;
     for (final t in transactions) {
-      balance += _contribution(walletId, t);
+      paise += _contributionPaise(walletId, t);
     }
-    return double.parse(balance.toStringAsFixed(2));
+    return _fromPaise(paise);
   }
 
+  /// Wallet balance up to [upTo] datetime (for opening balance calculation).
   double computeWalletBalanceUpTo(
     String walletId,
     List<TransactionModel> transactions,
     DateTime upTo,
   ) {
-    double balance = 0.0;
+    int paise = 0;
     for (final t in transactions) {
       if (!t.dateTime.isAfter(upTo)) {
-        balance += _contribution(walletId, t);
+        paise += _contributionPaise(walletId, t);
       }
     }
-    return double.parse(balance.toStringAsFixed(2));
+    return _fromPaise(paise);
   }
 
-  // ── Balance validation ────────────────────────────────────────────────────
-
-  /// Returns the spendable balance for [walletId].
-  /// Pass [excludeTransactionId] when editing an existing transaction so the
-  /// original debit is not double-counted.
+  /// Spendable balance, optionally excluding a transaction being edited.
   double availableBalance({
     required String walletId,
     required List<TransactionModel> allTransactions,
@@ -48,7 +50,7 @@ class BalanceService {
     return computeWalletBalance(walletId, txns);
   }
 
-  /// Returns true if [walletId] can afford [amount].
+  /// True if wallet can afford [amount] (optionally excluding one transaction).
   bool canAfford({
     required String walletId,
     required double amount,
@@ -60,24 +62,48 @@ class BalanceService {
           allTransactions: allTransactions,
           excludeTransactionId: excludeTransactionId,
         ) >=
-        amount;
+        amount - 0.001; // tiny epsilon for float comparison
   }
 
-  // ── Contribution ──────────────────────────────────────────────────────────
+  // ── Core contribution (integer paise to avoid float drift) ────────────────
 
-  double _contribution(String walletId, TransactionModel t) {
+  /// Returns contribution of transaction [t] to [walletId] in paise (1/100 BDT).
+  int _contributionPaise(String walletId, TransactionModel t) {
+    final amountPaise = _toPaise(t.amount);
     switch (t.type) {
       case TransactionType.income:
-        return t.sourceWalletId == walletId ? t.amount : 0.0;
+        // Income credits the source wallet.
+        return t.sourceWalletId == walletId ? amountPaise : 0;
+
       case TransactionType.expense:
-        return t.sourceWalletId == walletId ? -t.amount : 0.0;
+        // Expense debits the source wallet.
+        return t.sourceWalletId == walletId ? -amountPaise : 0;
+
       case TransactionType.transfer:
       case TransactionType.savings:
-        double c = 0.0;
-        if (t.sourceWalletId == walletId) c -= t.amount;
-        if (t.destinationWalletId == walletId) c += t.amount;
+        // Transfer: source debited, destination credited.
+        // The stored amount is EXACTLY what the destination receives.
+        // Any charge is stored as a SEPARATE expense record.
+        int c = 0;
+        if (t.sourceWalletId == walletId) c -= amountPaise;
+        if (t.destinationWalletId == walletId) c += amountPaise;
         return c;
     }
+  }
+
+  // ── Integer paise helpers ─────────────────────────────────────────────────
+
+  static int _toPaise(double bdt) => (bdt * 100).round();
+  static double _fromPaise(int paise) => paise / 100.0;
+
+  /// Round to exactly 2 decimal places — use for ALL money values before storing.
+  static double round2(double value) {
+    return (value * 100).round() / 100.0;
+  }
+
+  /// Calculate charge amount from principal and rate.
+  static double calcCharge(double amount, double rate) {
+    return round2(amount * rate);
   }
 
   // ── Monthly wallet summary ────────────────────────────────────────────────
@@ -95,47 +121,51 @@ class BalanceService {
       monthStart.subtract(const Duration(milliseconds: 1)),
     );
 
-    double inflow = 0.0;
-    double outflow = 0.0;
+    int inflowPaise = 0;
+    int outflowPaise = 0;
 
     for (final t in monthTransactions) {
-      final c = _contribution(walletId, t);
+      final c = _contributionPaise(walletId, t);
       if (c > 0) {
-        inflow += c;
+        inflowPaise += c;
       } else {
-        outflow += c.abs();
+        outflowPaise += c.abs();
       }
     }
 
     return WalletSummary(
       walletId: walletId,
       walletName: walletName,
-      balance: double.parse((openingBalance + inflow - outflow).toStringAsFixed(2)),
-      totalInflow: double.parse(inflow.toStringAsFixed(2)),
-      totalOutflow: double.parse(outflow.toStringAsFixed(2)),
+      balance: round2(openingBalance +
+          _fromPaise(inflowPaise) -
+          _fromPaise(outflowPaise)),
+      totalInflow: _fromPaise(inflowPaise),
+      totalOutflow: _fromPaise(outflowPaise),
     );
   }
 
   // ── Aggregates ─────────────────────────────────────────────────────────────
 
   double totalIncome(List<TransactionModel> transactions) =>
-      _sum(transactions.where((t) => t.type == TransactionType.income));
+      _fromPaise(transactions
+          .where((t) => t.type == TransactionType.income)
+          .fold(0, (s, t) => s + _toPaise(t.amount)));
 
   double totalExpense(List<TransactionModel> transactions) =>
-      _sum(transactions.where((t) => t.type == TransactionType.expense));
+      _fromPaise(transactions
+          .where((t) => t.type == TransactionType.expense)
+          .fold(0, (s, t) => s + _toPaise(t.amount)));
 
   double totalSavings(List<TransactionModel> transactions) =>
-      _sum(transactions.where((t) => t.type == TransactionType.savings));
+      _fromPaise(transactions
+          .where((t) => t.type == TransactionType.savings)
+          .fold(0, (s, t) => s + _toPaise(t.amount)));
 
   double totalTransfer(List<TransactionModel> transactions) =>
-      _sum(transactions.where((t) => t.type == TransactionType.transfer));
+      _fromPaise(transactions
+          .where((t) => t.type == TransactionType.transfer)
+          .fold(0, (s, t) => s + _toPaise(t.amount)));
 
   double netForMonth(List<TransactionModel> transactions) =>
-      double.parse((totalIncome(transactions) - totalExpense(transactions))
-          .toStringAsFixed(2));
-
-  double _sum(Iterable<TransactionModel> transactions) =>
-      double.parse(transactions
-          .fold(0.0, (s, t) => s + t.amount)
-          .toStringAsFixed(2));
+      round2(totalIncome(transactions) - totalExpense(transactions));
 }

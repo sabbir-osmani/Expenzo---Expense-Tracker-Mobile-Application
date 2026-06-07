@@ -14,22 +14,42 @@ class WalletPicker extends ConsumerWidget {
     required this.onChanged,
     this.label = 'Wallet',
     this.excludeWalletId,
+    this.excludeSavings = false,
   });
 
   final String? selectedWalletId;
   final ValueChanged<String?> onChanged;
   final String label;
   final String? excludeWalletId;
+  /// When true, Savings wallet is never shown. Used for income/expense pickers.
+  final bool excludeSavings;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final wallets = ref.watch(activeWalletsProvider);
-    final available = excludeWalletId != null
-        ? wallets.where((w) => w.id != excludeWalletId).toList()
-        : wallets;
+
+    final available = wallets.where((w) {
+      if (excludeWalletId != null && w.id == excludeWalletId) return false;
+      if (excludeSavings && w.id == WalletConstants.savingsWalletId) {
+        return false;
+      }
+      return true;
+    }).toList();
+
+    // If selected wallet is now excluded, reset to first available.
+    final effectiveSelected = available.any((w) => w.id == selectedWalletId)
+        ? selectedWalletId
+        : (available.isNotEmpty ? available.first.id : null);
+
+    // If we need to auto-correct the selection, notify parent after build.
+    if (effectiveSelected != selectedWalletId && effectiveSelected != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        onChanged(effectiveSelected);
+      });
+    }
 
     return DropdownButtonFormField<String>(
-      value: selectedWalletId,
+      value: effectiveSelected,
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: const Icon(Icons.account_balance_wallet_outlined),

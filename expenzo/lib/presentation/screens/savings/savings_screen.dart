@@ -414,12 +414,6 @@ class _SavingsOperationSheetState
     super.dispose();
   }
 
-  double get _sourceBalance {
-    final balances = ref.read(walletBalanceMapProvider);
-    return widget.isDeposit
-        ? (balances[_walletId] ?? 0.0)
-        : (balances[WalletConstants.savingsWalletId] ?? 0.0);
-  }
 
   Future<void> _save() async {
     if (_amount <= 0) {

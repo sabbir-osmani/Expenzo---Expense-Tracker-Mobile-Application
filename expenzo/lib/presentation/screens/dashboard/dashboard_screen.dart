@@ -20,17 +20,7 @@ class DashboardScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => context.push('/add-transaction'),
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        elevation: 4,
-        icon: const Icon(Icons.add, size: 22),
-        label: Text(
-          'Add',
-          style: AppTextStyles.titleMedium.copyWith(color: Colors.white),
-        ),
-      ),
+      // No FAB here — it lives in MainShell as the centred notch FAB.
       body: SafeArea(
         child: Column(
           children: [
@@ -93,7 +83,7 @@ class DashboardScreen extends ConsumerWidget {
             ),
           ),
           const SliverPadding(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 100),
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 120),
             sliver: TodayTransactionsList(),
           ),
         ],

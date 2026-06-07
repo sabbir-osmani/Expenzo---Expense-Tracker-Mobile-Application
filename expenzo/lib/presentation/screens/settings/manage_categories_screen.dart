@@ -27,10 +27,16 @@ class _ManageCategoriesScreenState
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
+  // Only Income and Expense tabs — Savings removed from UI.
+  static const _tabs = [
+    (TransactionType.income,  'Income'),
+    (TransactionType.expense, 'Expense'),
+  ];
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: _tabs.length, vsync: this);
     _tabController.addListener(() => setState(() {}));
   }
 
@@ -40,16 +46,7 @@ class _ManageCategoriesScreenState
     super.dispose();
   }
 
-  TransactionType get _currentType {
-    switch (_tabController.index) {
-      case 0:
-        return TransactionType.income;
-      case 1:
-        return TransactionType.expense;
-      default:
-        return TransactionType.savings;
-    }
-  }
+  TransactionType get _currentType => _tabs[_tabController.index].$1;
 
   @override
   Widget build(BuildContext context) {
@@ -62,11 +59,9 @@ class _ManageCategoriesScreenState
           preferredSize: const Size.fromHeight(48),
           child: TabBar(
             controller: _tabController,
-            tabs: const [
-              Tab(text: 'Income'),
-              Tab(text: 'Expense'),
-              Tab(text: 'Savings'),
-            ],
+            tabs: _tabs
+                .map((t) => Tab(text: t.$2))
+                .toList(),
             labelColor: AppColors.primary,
             unselectedLabelColor: AppColors.textTertiary,
             indicatorColor: AppColors.primary,
@@ -82,15 +77,14 @@ class _ManageCategoriesScreenState
       ),
       body: TabBarView(
         controller: _tabController,
-        children: TransactionType.values
-            .where((t) => t != TransactionType.transfer)
-            .map((type) => _CategoryList(
-                  type: type,
-                  onEdit: (cat) => _showAddEditSheet(context, cat),
-                  onDelete: (cat) => _deleteCategory(context, cat),
-                  onToggle: (cat) => _toggleCategory(cat),
-                ))
-            .toList(),
+        children: _tabs.map((tab) {
+          return _CategoryList(
+            type: tab.$1,
+            onEdit: (cat) => _showAddEditSheet(context, cat),
+            onDelete: (cat) => _deleteCategory(context, cat),
+            onToggle: (cat) => _toggleCategory(cat),
+          );
+        }).toList(),
       ),
     );
   }
@@ -112,30 +106,31 @@ class _ManageCategoriesScreenState
   }
 
   Future<void> _deleteCategory(
-    BuildContext context, CategoryModel cat) async {
-  // Capture messenger BEFORE any await to satisfy use_build_context_synchronously
-  final messenger = ScaffoldMessenger.of(context);
-
-  final confirmed = await ConfirmationDialog.show(
-    context,
-    title: 'Delete Category',
-    message:
-        'Deleting "${cat.name}" will not delete existing transactions. '
-        'They will show as "Unknown" category.',
-  );
-  if (!confirmed) return;
-
-  try {
-    await ref.read(categoryServiceProvider).deleteCategory(cat.id);
-    ref.read(categoryNotifierProvider.notifier).reload();
-  } on ProtectedCategoryException catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text(e.message)));
-  } catch (e) {
-    messenger.showSnackBar(
-      SnackBar(content: Text('Delete failed: $e')),
+      BuildContext context, CategoryModel cat) async {
+    final confirmed = await ConfirmationDialog.show(
+      context,
+      title: 'Delete Category',
+      message:
+          'Deleting "${cat.name}" will not delete existing transactions. '
+          'They will show as "Unknown" category.',
     );
+    if (!confirmed) return;
+
+    try {
+      await ref.read(categoryServiceProvider).deleteCategory(cat.id);
+      ref.read(categoryNotifierProvider.notifier).reload();
+    } on ProtectedCategoryException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
   }
-}
 
   Future<void> _toggleCategory(CategoryModel cat) async {
     await ref.read(categoryServiceProvider).toggleCategoryActive(cat.id);
@@ -183,10 +178,11 @@ class _CategoryList extends ConsumerWidget {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
+                color: color.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(IconUtils.fromName(cat.iconName), color: color, size: 20),
+              child: Icon(IconUtils.fromName(cat.iconName),
+                  color: color, size: 20),
             ),
             title: Text(
               cat.name,
@@ -275,7 +271,6 @@ class _AddEditCategorySheetState
   Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() => _isSaving = true);
-
     try {
       final svc = ref.read(categoryServiceProvider);
       if (widget.existing == null) {
@@ -313,14 +308,15 @@ class _AddEditCategorySheetState
   Widget build(BuildContext context) {
     final existingNames = ref
         .read(allCategoriesProvider)
-        .where((c) => widget.existing == null || c.id != widget.existing!.id)
+        .where((c) =>
+            c.type == widget.defaultType &&
+            (widget.existing == null || c.id != widget.existing!.id))
         .map((c) => c.name)
         .toList();
 
     return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).viewInsets.bottom,
-      ),
+      padding:
+          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: Container(
         decoration: const BoxDecoration(
           color: AppColors.surface,
@@ -341,7 +337,8 @@ class _AddEditCategorySheetState
               TextFormField(
                 controller: _nameController,
                 autofocus: true,
-                decoration: const InputDecoration(labelText: 'Category Name'),
+                decoration:
+                    const InputDecoration(labelText: 'Category Name'),
                 validator: (v) =>
                     AppValidator.categoryName(v, existing: existingNames),
                 textCapitalization: TextCapitalization.sentences,
@@ -362,11 +359,13 @@ class _AddEditCategorySheetState
                         color: Color(hex.colorValue),
                         shape: BoxShape.circle,
                         border: isSelected
-                            ? Border.all(color: AppColors.textPrimary, width: 3)
+                            ? Border.all(
+                                color: AppColors.textPrimary, width: 3)
                             : null,
                       ),
                       child: isSelected
-                          ? const Icon(Icons.check, color: Colors.white, size: 16)
+                          ? const Icon(Icons.check,
+                              color: Colors.white, size: 16)
                           : null,
                     ),
                   );
@@ -385,7 +384,8 @@ class _AddEditCategorySheetState
                     final iconName = IconUtils.availableIcons[i];
                     final isSelected = _selectedIcon == iconName;
                     return GestureDetector(
-                      onTap: () => setState(() => _selectedIcon = iconName),
+                      onTap: () =>
+                          setState(() => _selectedIcon = iconName),
                       child: Container(
                         width: 44,
                         height: 44,
@@ -401,7 +401,9 @@ class _AddEditCategorySheetState
                         child: Icon(
                           IconUtils.fromName(iconName),
                           size: 20,
-                          color: isSelected ? Colors.white : AppColors.textSecondary,
+                          color: isSelected
+                              ? Colors.white
+                              : AppColors.textSecondary,
                         ),
                       ),
                     );
@@ -418,9 +420,10 @@ class _AddEditCategorySheetState
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2),
-                        )
-                      : Text(widget.existing == null ? 'Add Category' : 'Update'),
+                              color: Colors.white, strokeWidth: 2))
+                      : Text(widget.existing == null
+                          ? 'Add Category'
+                          : 'Update'),
                 ),
               ),
             ],

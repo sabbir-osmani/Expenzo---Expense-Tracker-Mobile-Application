@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/enums/transaction_type.dart';
+import '../../../core/extensions/double_ext.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../data/models/transaction_model.dart';
@@ -62,7 +64,7 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
             color: AppColors.surface,
             child: const MonthNavigator(),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           Expanded(
             child: transactionsAsync.when(
               loading: () =>
@@ -77,8 +79,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   }
 
   Widget _buildList(BuildContext context) {
-    final monthTransactions = ref.watch(monthTransactionsProvider);
-    final filtered = _applyFilters(monthTransactions);
+    final monthTxns = ref.watch(monthTransactionsProvider);
+    final filtered = _applyFilters(monthTxns);
 
     if (filtered.isEmpty) {
       return EmptyState(
@@ -92,20 +94,41 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
       );
     }
 
+    // Group transactions by calendar day.
+    // Map: "YYYY-MM-DD" → list of transactions that day.
+    final grouped = <String, List<TransactionModel>>{};
+    for (final t in filtered) {
+      final key = '${t.dateTime.year}-'
+          '${t.dateTime.month.toString().padLeft(2, '0')}-'
+          '${t.dateTime.day.toString().padLeft(2, '0')}';
+      grouped.putIfAbsent(key, () => []).add(t);
+    }
+    // Sorted day keys newest first.
+    final days = grouped.keys.toList()..sort((a, b) => b.compareTo(a));
+
     return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
-      itemCount: filtered.length,
-      itemBuilder: (context, i) {
-        final t = filtered[i];
-        final showDate = i == 0 ||
-            filtered[i - 1].dateTime.day != t.dateTime.day ||
-            filtered[i - 1].dateTime.month != t.dateTime.month;
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+      itemCount: days.length,
+      itemBuilder: (context, dayIndex) {
+        final dayKey = days[dayIndex];
+        final dayTxns = grouped[dayKey]!;
+        // Sort within day newest first.
+        dayTxns.sort((a, b) => b.dateTime.compareTo(a.dateTime));
+
+        // Day's total expense.
+        final dayExpense = dayTxns
+            .where((t) => t.type == TransactionType.expense)
+            .fold(0.0, (s, t) => s + t.amount);
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (showDate) _DateHeader(dateTime: t.dateTime),
-            Padding(
+            // Day header with total expense.
+            _DayHeader(
+              dateTime: dayTxns.first.dateTime,
+              totalExpense: dayExpense,
+            ),
+            ...dayTxns.map((t) => Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: TransactionTile(
                 transaction: t,
@@ -113,7 +136,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                 onEdit: () => context.push('/edit-transaction/${t.id}'),
                 onDelete: () => _deleteTransaction(t.id),
               ),
-            ),
+            )),
+            const SizedBox(height: 4),
           ],
         );
       },
@@ -124,9 +148,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
     await ref.read(transactionNotifierProvider.notifier).delete(id);
   }
 
-  List<TransactionModel> _applyFilters(List<TransactionModel> transactions) {
-    var result = transactions;
-
+  List<TransactionModel> _applyFilters(List<TransactionModel> txns) {
+    var result = txns;
     if (_searchQuery.isNotEmpty) {
       final q = _searchQuery.toLowerCase();
       result = result
@@ -135,16 +158,13 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               (t.note?.toLowerCase().contains(q) ?? false))
           .toList();
     }
-
     if (_filter.type != null) {
       result = result.where((t) => t.type == _filter.type).toList();
     }
-
     if (_filter.categoryId != null) {
       result =
           result.where((t) => t.categoryId == _filter.categoryId).toList();
     }
-
     if (_filter.walletId != null) {
       result = result
           .where((t) =>
@@ -152,7 +172,6 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               t.destinationWalletId == _filter.walletId)
           .toList();
     }
-
     return result;
   }
 
@@ -163,19 +182,21 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
       backgroundColor: Colors.transparent,
       builder: (_) => FilterSheet(currentFilter: _filter),
     );
-    if (result != null) {
-      setState(() => _filter = result);
-    }
+    if (result != null) setState(() => _filter = result);
   }
 }
 
-class _DateHeader extends StatelessWidget {
-  const _DateHeader({required this.dateTime});
-  final DateTime dateTime;
+// ── Day header with expense total ─────────────────────────────────────────────
 
-  @override
-  Widget build(BuildContext context) {
-    // Format: "Today", "Yesterday", or date string.
+class _DayHeader extends StatelessWidget {
+  const _DayHeader({
+    required this.dateTime,
+    required this.totalExpense,
+  });
+  final DateTime dateTime;
+  final double totalExpense;
+
+  String get _label {
     final now = DateTime.now();
     final isToday = dateTime.year == now.year &&
         dateTime.month == now.month &&
@@ -185,27 +206,63 @@ class _DateHeader extends StatelessWidget {
         dateTime.month == yesterday.month &&
         dateTime.day == yesterday.day;
 
-    String label;
-    if (isToday) {
-      label = 'Today';
-    } else if (isYesterday) {
-      label = 'Yesterday';
-    } else {
-      label = dateTime.displayDate;
-    }
+    if (isToday) return 'Today';
+    if (isYesterday) return 'Yesterday';
+    const months = [
+      '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return '${dateTime.day} ${months[dateTime.month]} ${dateTime.year}';
+  }
 
+  @override
+  Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 12, 0, 8),
-      child: Text(
-        label,
-        style: AppTextStyles.labelMedium.copyWith(
-          color: AppColors.textSecondary,
-          fontWeight: FontWeight.w600,
-        ),
+      padding: const EdgeInsets.fromLTRB(2, 12, 2, 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            _label,
+            style: AppTextStyles.labelMedium.copyWith(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          // Only show expense total if there are expenses that day.
+          if (totalExpense > 0)
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.expenseLight,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: AppColors.expense.withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.arrow_upward,
+                      size: 11, color: AppColors.expense),
+                  const SizedBox(width: 4),
+                  Text(
+                    totalExpense.toCurrency,
+                    style: AppTextStyles.labelMedium.copyWith(
+                      color: AppColors.expense,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
 }
+
+// ── Search bar ────────────────────────────────────────────────────────────────
 
 class _SearchBar extends StatelessWidget {
   const _SearchBar({required this.controller, required this.onChanged});
@@ -265,16 +322,5 @@ class _FilterButton extends StatelessWidget {
           ),
       ],
     );
-  }
-}
-
-// Extension for display date — added locally to avoid import dependency.
-extension _DateExt on DateTime {
-  String get displayDate {
-    const months = [
-      '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return '$day ${months[month]} $year';
   }
 }

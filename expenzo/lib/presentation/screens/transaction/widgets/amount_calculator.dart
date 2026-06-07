@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/theme/app_colors.dart';
@@ -17,7 +18,7 @@ class AmountCalculator extends StatefulWidget {
   static Future<double?> show(
     BuildContext context, {
     double initialValue = 0,
-  }) async {
+  }) {
     return showModalBottomSheet<double>(
       context: context,
       isScrollControlled: true,
@@ -35,30 +36,45 @@ class AmountCalculator extends StatefulWidget {
 
 class _AmountCalculatorState extends State<AmountCalculator> {
   String _display = '0';
-  double _operand = 0;
+  int _operandPaise = 0; // integer paise to avoid float drift
   String? _operator;
   bool _freshEntry = false;
   bool _hasDecimal = false;
+  String _hint = ''; // shows e.g. "5,000 +"
 
   @override
   void initState() {
     super.initState();
     if (widget.initialValue > 0) {
       _display = _fmt(widget.initialValue);
-      _operand = widget.initialValue;
+      _operandPaise = _toPaise(widget.initialValue);
     }
   }
 
-  void _onKey(String key) {
+  static int _toPaise(double v) => (v * 100).round();
+  static double _fromPaise(int p) => p / 100.0;
+
+  String _fmt(double v) {
+    if (v == v.truncateToDouble()) return v.toInt().toString();
+    String s = v.toStringAsFixed(2);
+    s = s.replaceAll(RegExp(r'0+$'), '');
+    if (s.endsWith('.')) s = s.substring(0, s.length - 1);
+    return s;
+  }
+
+  double get _currentValue => double.tryParse(_display) ?? 0;
+
+  void _key(String k) {
+    HapticFeedback.selectionClick();
     setState(() {
-      switch (key) {
+      switch (k) {
         case 'C':
           _display = '0';
-          _operand = 0;
+          _operandPaise = 0;
           _operator = null;
           _freshEntry = false;
           _hasDecimal = false;
-
+          _hint = '';
         case '⌫':
           if (_display.length <= 1) {
             _display = '0';
@@ -67,7 +83,6 @@ class _AmountCalculatorState extends State<AmountCalculator> {
             if (_display.endsWith('.')) _hasDecimal = false;
             _display = _display.substring(0, _display.length - 1);
           }
-
         case '.':
           if (_freshEntry) {
             _display = '0.';
@@ -77,156 +92,119 @@ class _AmountCalculatorState extends State<AmountCalculator> {
             _display = '$_display.';
             _hasDecimal = true;
           }
-
         case '%':
-          final current = double.tryParse(_display) ?? 0;
-          _display = _fmt(current / 100);
+          final v = _currentValue / 100;
+          _display = _fmt(v);
           _freshEntry = true;
           _hasDecimal = _display.contains('.');
-
         case '=':
-          _calculate();
-
-        case '+':
-        case '-':
-        case '×':
-        case '÷':
-          _applyOperator(key);
-
+          _calc();
+        case '+': case '-': case '×': case '÷':
+          _applyOp(k);
         default:
           if (_freshEntry) {
-            _display = key;
+            _display = k;
             _freshEntry = false;
             _hasDecimal = false;
           } else {
-            if (_display == '0') {
-              _display = key;
-            } else if (_display.length < 15) {
-              _display = '$_display$key';
-            }
+            _display = (_display == '0') ? k
+                : (_display.length < 13 ? '$_display$k' : _display);
           }
       }
     });
   }
 
-  void _applyOperator(String op) {
+  void _applyOp(String op) {
     if (_operator != null && !_freshEntry) {
-      _calculate();
+      _calc(keepOp: true);
     } else {
-      _operand = double.tryParse(_display) ?? 0;
+      _operandPaise = _toPaise(_currentValue);
     }
+    _hint = '${_fmt(_fromPaise(_operandPaise))} $op';
     _operator = op;
     _freshEntry = true;
     _hasDecimal = false;
   }
 
-  void _calculate() {
+  void _calc({bool keepOp = false}) {
     if (_operator == null) return;
-    final right = double.tryParse(_display) ?? 0;
-    double result;
-
+    final l = _operandPaise;
+    final r = _toPaise(_currentValue);
+    int result;
     switch (_operator) {
-      case '+':
-        result = _operand + right;
-      case '-':
-        result = _operand - right;
-      case '×':
-        result = _operand * right;
-      case '÷':
-        result = right == 0 ? 0 : _operand / right;
-      default:
-        result = right;
+      case '+': result = l + r;
+      case '-': result = l - r;
+      case '×': result = ((_fromPaise(l)) * _currentValue * 100).round();
+      case '÷': result = _currentValue == 0 ? 0 : ((_fromPaise(l) / _currentValue) * 100).round();
+      default:  result = r;
     }
-
     if (result < 0) result = 0;
-    if (result > AppConstants.maxTransactionAmount) {
-      result = AppConstants.maxTransactionAmount;
-    }
-
-    _operand = result;
-    _display = _fmt(result);
-    _operator = null;
+    final max = _toPaise(AppConstants.maxTransactionAmount);
+    if (result > max) result = max;
+    _operandPaise = result;
+    _display = _fmt(_fromPaise(result));
+    if (!keepOp) { _hint = ''; _operator = null; }
     _freshEntry = true;
     _hasDecimal = _display.contains('.');
   }
 
-  String _fmt(double value) {
-    if (value == value.truncateToDouble()) return value.toInt().toString();
-    String s = value.toStringAsFixed(2);
-    if (s.contains('.')) {
-      s = s.replaceAll(RegExp(r'0+$'), '');
-      if (s.endsWith('.')) s = s.substring(0, s.length - 1);
-    }
-    return s;
-  }
-
-  double get _currentValue => double.tryParse(_display) ?? 0;
-
   @override
   Widget build(BuildContext context) {
+    final isValid = _currentValue > 0;
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+
     return Container(
       decoration: const BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+      padding: EdgeInsets.fromLTRB(20, 14, 20, 20 + bottomPad),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 40,
-            height: 4,
-            margin: const EdgeInsets.only(bottom: 16),
-            decoration: BoxDecoration(
-              color: AppColors.border,
-              borderRadius: BorderRadius.circular(2),
+          // Handle bar
+          Center(
+            child: Container(
+              width: 36, height: 4,
+              margin: const EdgeInsets.only(bottom: 14),
+              decoration: BoxDecoration(
+                color: AppColors.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
           ),
-          Container(
-            width: double.infinity,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceVariant,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (_operator != null)
-                  Text(
-                    '${_fmt(_operand)} $_operator',
-                    style: AppTextStyles.bodySmall
-                        .copyWith(color: AppColors.textSecondary),
-                  ),
-                Text(
-                  _display,
-                  style: AppTextStyles.amountLarge,
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
+
+          // Display
+          _buildDisplay(),
+          const SizedBox(height: 16),
+
+          // Keys
+          _buildKeys(),
           const SizedBox(height: 14),
-          _buildKeypad(),
-          const SizedBox(height: 14),
+
+          // Confirm
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () {
-                if (_operator != null) _calculate();
-                final val = _currentValue;
-                if (val > 0) {
-                  widget.onConfirm(
-                      double.parse(val.toStringAsFixed(2)));
-                }
-              },
+              onPressed: isValid
+                  ? () {
+                      HapticFeedback.mediumImpact();
+                      widget.onConfirm(double.parse(_currentValue.toStringAsFixed(2)));
+                    }
+                  : null,
               style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                disabledBackgroundColor: AppColors.border,
                 padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
-              child: const Text('Confirm'),
+              child: Text(
+                isValid ? 'Confirm' : 'Enter Amount',
+                style: AppTextStyles.titleMedium.copyWith(
+                  color: isValid ? Colors.white : AppColors.textTertiary,
+                ),
+              ),
             ),
           ),
         ],
@@ -234,105 +212,163 @@ class _AmountCalculatorState extends State<AmountCalculator> {
     );
   }
 
-  Widget _buildKeypad() {
+  Widget _buildDisplay() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceVariant,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _currentValue > 0 ? AppColors.primary.withValues(alpha: 0.3) : AppColors.border,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Pending operation hint
+          if (_hint.isNotEmpty)
+            Text(_hint,
+                style: AppTextStyles.bodySmall
+                    .copyWith(color: AppColors.textTertiary)),
+          // Main number
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerRight,
+            child: Text(
+              _display,
+              style: AppTextStyles.amountLarge.copyWith(
+                fontSize: 36,
+                color: _currentValue > 0
+                    ? AppColors.textPrimary
+                    : AppColors.textSecondary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildKeys() {
     const rows = [
       ['7', '8', '9', '÷'],
       ['4', '5', '6', '×'],
       ['1', '2', '3', '-'],
       ['%', '0', '.', '+'],
-      ['C', '⌫', '', '='],
     ];
 
     return Column(
-      children: rows.map((row) {
-        return Padding(
+      children: [
+        ...rows.map((row) => Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: Row(
-            children: row.map((key) {
-              if (key.isEmpty) {
-                return const Expanded(child: SizedBox());
-              }
-              return Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: _CalcKey(
-                    label: key,
-                    onTap: () => _onKey(key),
-                    type: _keyType(key),
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        );
-      }).toList(),
+          child: Row(children: row.map((k) => Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: _Key(label: k, type: _kType(k), onTap: () => _key(k)),
+            ),
+          )).toList()),
+        )),
+        // Bottom row: C (wide), ⌫, =
+        Row(children: [
+          Expanded(flex: 2, child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: _Key(label: 'C', type: _KeyType.clear, onTap: () => _key('C')),
+          )),
+          Expanded(child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: _Key(label: '⌫', type: _KeyType.delete, onTap: () => _key('⌫')),
+          )),
+          Expanded(child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: _Key(label: '=', type: _KeyType.equals, onTap: () => _key('=')),
+          )),
+        ]),
+      ],
     );
   }
 
-  _KeyType _keyType(String key) {
-    if (key == '=') return _KeyType.equals;
-    if (key == 'C') return _KeyType.clear;
-    if (key == '⌫') return _KeyType.delete;
-    if (key == '+' ||
-        key == '-' ||
-        key == '×' ||
-        key == '÷' ||
-        key == '%') {
-      return _KeyType.operator;
-    }
+  _KeyType _kType(String k) {
+    if (k == '=') return _KeyType.equals;
+    if (k == 'C') return _KeyType.clear;
+    if (k == '⌫') return _KeyType.delete;
+    if ('+-×÷%'.contains(k)) return _KeyType.operator;
     return _KeyType.digit;
   }
 }
 
 enum _KeyType { digit, operator, equals, clear, delete }
 
-class _CalcKey extends StatelessWidget {
-  const _CalcKey({
-    required this.label,
-    required this.onTap,
-    required this.type,
-  });
-
+class _Key extends StatefulWidget {
+  const _Key({required this.label, required this.type, required this.onTap});
   final String label;
-  final VoidCallback onTap;
   final _KeyType type;
+  final VoidCallback onTap;
+
+  @override
+  State<_Key> createState() => _KeyState();
+}
+
+class _KeyState extends State<_Key> {
+  bool _pressed = false;
 
   @override
   Widget build(BuildContext context) {
     Color bg;
     Color fg;
 
-    switch (type) {
+    switch (widget.type) {
       case _KeyType.equals:
-        bg = AppColors.primary;
+        bg = _pressed ? AppColors.primaryDark : AppColors.primary;
         fg = Colors.white;
       case _KeyType.operator:
-        bg = AppColors.primary.withValues(alpha: 0.1);
+        bg = _pressed
+            ? AppColors.primaryLight.withValues(alpha: 0.25)
+            : AppColors.primaryLight.withValues(alpha: 0.12);
         fg = AppColors.primary;
       case _KeyType.clear:
-        bg = AppColors.savingsLight;
+        bg = _pressed
+            ? AppColors.savingsLight
+            : AppColors.savings.withValues(alpha: 0.1);
         fg = AppColors.savings;
       case _KeyType.delete:
-        bg = AppColors.expenseLight;
+        bg = _pressed ? AppColors.expenseLight : AppColors.expense.withValues(alpha: 0.08);
         fg = AppColors.expense;
       case _KeyType.digit:
-        bg = AppColors.surfaceVariant;
+        bg = _pressed ? AppColors.border : AppColors.surfaceVariant;
         fg = AppColors.textPrimary;
     }
 
     return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        height: 56,
+      onTapDown: (_) { setState(() => _pressed = true); },
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        widget.onTap();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 80),
+        height: 54,
         decoration: BoxDecoration(
           color: bg,
           borderRadius: BorderRadius.circular(12),
+          border: widget.type == _KeyType.digit
+              ? Border.all(color: AppColors.border.withValues(alpha: 0.5))
+              : null,
         ),
         alignment: Alignment.center,
-        child: Text(
-          label,
-          style: AppTextStyles.titleLarge.copyWith(color: fg),
-        ),
+        child: widget.label == '⌫'
+            ? Icon(Icons.backspace_outlined, color: fg, size: 20)
+            : Text(
+                widget.label,
+                style: TextStyle(
+                  fontSize: widget.type == _KeyType.digit ? 21 : 19,
+                  fontWeight: widget.type == _KeyType.digit
+                      ? FontWeight.w500
+                      : FontWeight.w600,
+                  color: fg,
+                ),
+              ),
       ),
     );
   }
