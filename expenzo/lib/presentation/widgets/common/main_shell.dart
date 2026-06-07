@@ -28,17 +28,15 @@ class MainShell extends ConsumerWidget {
 
     return Scaffold(
       body: child,
-      // Curved notch FAB bar — no FAB in DashboardScreen.
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       floatingActionButton: _AddFab(),
-      bottomNavigationBar: _CurvedBottomBar(
+      bottomNavigationBar: _CurvedBar(
         currentIndex: currentIndex,
-        tabs: _tabs,
-        onTap: (i, path, ref) {
+        onTap: (i) {
+          HapticFeedback.lightImpact();
           ref.read(currentTabIndexProvider.notifier).state = i;
-          context.go(path);
+          context.go(_tabs[i].path);
         },
-        ref: ref,
       ),
     );
   }
@@ -46,55 +44,35 @@ class MainShell extends ConsumerWidget {
 
 // ── Curved bottom bar ─────────────────────────────────────────────────────────
 
-class _CurvedBottomBar extends StatelessWidget {
-  const _CurvedBottomBar({
-    required this.currentIndex,
-    required this.tabs,
-    required this.onTap,
-    required this.ref,
-  });
-
+class _CurvedBar extends StatelessWidget {
+  const _CurvedBar({required this.currentIndex, required this.onTap});
   final int currentIndex;
-  final List<_TabItem> tabs;
-  final void Function(int, String, WidgetRef) onTap;
-  final WidgetRef ref;
+  final ValueChanged<int> onTap;
 
   @override
   Widget build(BuildContext context) {
     return BottomAppBar(
       shape: const CircularNotchedRectangle(),
-      notchMargin: 10,
+      notchMargin: 8,
       color: AppColors.surface,
-      elevation: 12,
-      shadowColor: AppColors.shadow,
+      elevation: 10,
       child: SizedBox(
-        height: 60,
+        height: 58,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            // Left 2 tabs.
-            ...List.generate(2, (i) => _NavItem(
-              tab: tabs[i],
-              isActive: currentIndex == i,
-              onTap: () {
-                HapticFeedback.lightImpact();
-                onTap(i, tabs[i].path, ref);
-              },
-            )),
-            // Centre gap for FAB.
-            const SizedBox(width: 64),
-            // Right 2 tabs.
-            ...List.generate(2, (i) {
-              final idx = i + 2;
-              return _NavItem(
-                tab: tabs[idx],
-                isActive: currentIndex == idx,
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  onTap(idx, tabs[idx].path, ref);
-                },
-              );
-            }),
+            // Left two tabs.
+            _NavItem(tab: MainShell._tabs[0], isActive: currentIndex == 0,
+                onTap: () => onTap(0)),
+            _NavItem(tab: MainShell._tabs[1], isActive: currentIndex == 1,
+                onTap: () => onTap(1)),
+            // Centre spacer for FAB.
+            const SizedBox(width: 60),
+            // Right two tabs.
+            _NavItem(tab: MainShell._tabs[2], isActive: currentIndex == 2,
+                onTap: () => onTap(2)),
+            _NavItem(tab: MainShell._tabs[3], isActive: currentIndex == 3,
+                onTap: () => onTap(3)),
           ],
         ),
       ),
@@ -102,7 +80,7 @@ class _CurvedBottomBar extends StatelessWidget {
   }
 }
 
-// ── Central FAB ───────────────────────────────────────────────────────────────
+// ── FAB — sits in the notch, never overlaps content ──────────────────────────
 
 class _AddFab extends StatefulWidget {
   @override
@@ -113,19 +91,15 @@ class _AddFabState extends State<_AddFab>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   late final Animation<double> _scale;
-  late final Animation<double> _rotate;
 
   @override
   void initState() {
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 180),
+      duration: const Duration(milliseconds: 120),
     );
     _scale = Tween<double>(begin: 1.0, end: 0.88).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
-    );
-    _rotate = Tween<double>(begin: 0.0, end: 0.125).animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
     );
   }
@@ -136,49 +110,36 @@ class _AddFabState extends State<_AddFab>
     super.dispose();
   }
 
-  void _onTapDown(TapDownDetails _) => _ctrl.forward();
-  void _onTapUp(TapUpDetails _) => _ctrl.reverse();
-  void _onTapCancel() => _ctrl.reverse();
-
   @override
   Widget build(BuildContext context) {
+    // FloatingActionButton.large sits in CircularNotchedRectangle.
+    // Modal bottom sheets render on top of FAB automatically — no overlap issue.
     return GestureDetector(
-      onTapDown: _onTapDown,
-      onTapUp: _onTapUp,
-      onTapCancel: _onTapCancel,
-      onTap: () {
+      onTapDown: (_) => _ctrl.forward(),
+      onTapUp: (_) {
+        _ctrl.reverse();
         HapticFeedback.mediumImpact();
         context.push('/add-transaction');
       },
-      child: AnimatedBuilder(
-        animation: _ctrl,
-        builder: (_, child) => Transform.scale(
-          scale: _scale.value,
-          child: Transform.rotate(
-            angle: _rotate.value * 3.14159,
-            child: child,
-          ),
-        ),
+      onTapCancel: () => _ctrl.reverse(),
+      child: ScaleTransition(
+        scale: _scale,
         child: Container(
-          width: 64,
-          height: 64,
+          width: 60,
+          height: 60,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF7986CB), AppColors.primary],
-            ),
+            color: AppColors.primary,
             boxShadow: [
               BoxShadow(
-                color: AppColors.primary.withValues(alpha: 0.45),
-                blurRadius: 16,
-                spreadRadius: 2,
+                color: AppColors.primary.withValues(alpha: 0.40),
+                blurRadius: 14,
+                spreadRadius: 1,
                 offset: const Offset(0, 4),
               ),
             ],
           ),
-          child: const Icon(Icons.add, color: Colors.white, size: 32),
+          child: const Icon(Icons.add, color: Colors.white, size: 30),
         ),
       ),
     );
@@ -204,38 +165,35 @@ class _NavItem extends StatelessWidget {
         onTap: onTap,
         splashColor: Colors.transparent,
         highlightColor: Colors.transparent,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
-                decoration: BoxDecoration(
-                  color: isActive
-                      ? AppColors.primary.withValues(alpha: 0.12)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Icon(
-                  isActive ? tab.activeIcon : tab.icon,
-                  color: isActive ? AppColors.primary : AppColors.textTertiary,
-                  size: 22,
-                ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+              decoration: BoxDecoration(
+                color: isActive
+                    ? AppColors.primary.withValues(alpha: 0.12)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(20),
               ),
-              const SizedBox(height: 2),
-              Text(
-                tab.label,
-                style: AppTextStyles.labelSmall.copyWith(
-                  color: isActive ? AppColors.primary : AppColors.textTertiary,
-                  fontWeight:
-                      isActive ? FontWeight.w600 : FontWeight.w400,
-                ),
+              child: Icon(
+                isActive ? tab.activeIcon : tab.icon,
+                color: isActive ? AppColors.primary : AppColors.textTertiary,
+                size: 22,
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              tab.label,
+              style: AppTextStyles.labelSmall.copyWith(
+                color: isActive ? AppColors.primary : AppColors.textTertiary,
+                fontWeight:
+                    isActive ? FontWeight.w600 : FontWeight.w400,
+              ),
+            ),
+          ],
         ),
       ),
     );
